@@ -6,6 +6,7 @@ set -e
 
 PANEL_DIR="/www/dk_project/dk_app/rustdesk/webpanel"
 DB_PATH="/www/dk_project/dk_app/rustdesk/rustdesk_KNEL/data/db_v2.sqlite3"
+CONTAINER_NAME="rustdesk_knel-rustdesk_KNEL-1"
 PORT=5900
 PANEL_PASSWORD="admin888"   # ← 改成你想要的密码
 
@@ -25,7 +26,7 @@ cp app.py "$PANEL_DIR/"
 cp requirements.txt "$PANEL_DIR/"
 
 # 3. 安装依赖
-pip3 install -q flask
+pip3 install -q flask 2>/dev/null || pip3 install flask --break-system-packages -q
 
 # 4. 停止旧进程
 pkill -f "python3.*app.py" 2>/dev/null || true
