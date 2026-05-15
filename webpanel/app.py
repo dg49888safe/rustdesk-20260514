@@ -92,18 +92,20 @@ def get_online_ips():
     return ips
 
 
-def _parse_proc_net(path, tcp_only=False):
+def _parse_proc_net(path):
     """解析 /proc/net/tcp、tcp6、udp、udp6，返回远端IP集合"""
     ips = set()
     port_hex = format(HBBS_PORT, "04X")
+    is_udp = "udp" in path
     try:
         with open(path) as f:
             for line in f.readlines()[1:]:
                 parts = line.split()
                 if len(parts) < 4:
                     continue
-                # TCP: state 01=ESTABLISHED; UDP: state 01=活跃
-                if parts[3] not in ("01", "07"):
+                state = parts[3]
+                # TCP: 01=ESTABLISHED; UDP: 不限状态（07=活跃，01也有）
+                if not is_udp and state != "01":
                     continue
                 local = parts[1]
                 remote = parts[2]
@@ -111,13 +113,16 @@ def _parse_proc_net(path, tcp_only=False):
                 if local_port.upper() != port_hex:
                     continue
                 remote_hex = remote.split(":")[0]
-                if len(remote_hex) == 8:
-                    b = bytes.fromhex(remote_hex)
-                    ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
-                elif len(remote_hex) == 32:
-                    b = bytes.fromhex(remote_hex[24:32])
-                    ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
-                else:
+                try:
+                    if len(remote_hex) == 8:
+                        b = bytes.fromhex(remote_hex)
+                        ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
+                    elif len(remote_hex) == 32:
+                        b = bytes.fromhex(remote_hex[24:32])
+                        ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
+                    else:
+                        continue
+                except Exception:
                     continue
                 if not ip.startswith("127.") and ip != "0.0.0.0":
                     ips.add(ip)
@@ -294,12 +299,28 @@ def api_debug():
     except Exception:
         pass
 
+    # 读取 /proc/net/udp 原始内容（含21116的行）
+    udp_raw = []
+    try:
+        port_hex = format(HBBS_PORT, "04X")
+        for p in ("/proc/net/udp6", "/proc/net/udp"):
+            try:
+                with open(p) as f:
+                    for line in f.readlines():
+                        if port_hex in line.upper():
+                            udp_raw.append(f"{p}: {line.strip()}")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return jsonify({"db_path": DB_PATH, "tables": tables, "columns": cols,
                     "sample": raw, "server_now": int(time.time()),
                     "container": CONTAINER_NAME, "hbbs_port": HBBS_PORT,
                     "online_ips_detected": list(online_ips),
                     "docker_port_map": port_map,
-                    "ss_established_sample": diag_lines})
+                    "ss_established_sample": diag_lines,
+                    "proc_udp_raw": udp_raw})
 
 
 @app.route("/api/stats")
