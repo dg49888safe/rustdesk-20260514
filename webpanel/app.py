@@ -20,6 +20,23 @@ DB_PATH = os.environ.get(
 )
 PANEL_PASSWORD = os.environ.get("PANEL_PASSWORD", "admin888")  # 面板访问密码
 ONLINE_TIMEOUT  = int(os.environ.get("ONLINE_TIMEOUT", "35"))   # 秒内有心跳视为在线
+
+
+def normalize_ts(ts):
+    """兼容秒级和毫秒级时间戳，统一转为秒"""
+    if ts and ts > 1e10:  # 毫秒级（13位）
+        return ts / 1000
+    return ts
+
+
+def get_table_name(conn):
+    """自动检测表名 peer 或 peers"""
+    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    if "peer" in tables:
+        return "peer"
+    if "peers" in tables:
+        return "peers"
+    return None
 # ─────────────────────────────────────────────────────
 
 
@@ -61,39 +78,27 @@ def api_devices():
     now_ts = int(time.time())
     online_cutoff = now_ts - ONLINE_TIMEOUT
 
+    table = get_table_name(conn)
+    if not table:
+        conn.close()
+        return jsonify({"error": "找不到 peer/peers 表", "devices": []})
     try:
-        # hbbs db_v2 表结构: id, uuid, pk, created_at, last_reg_time, note, ...
-        cur = conn.execute("""
-            SELECT
-                id,
-                uuid,
-                pk,
-                created_at,
-                last_reg_time,
-                note
-            FROM peer
+        cur = conn.execute(f"""
+            SELECT id, uuid, pk, created_at, last_reg_time, note
+            FROM {table}
             ORDER BY last_reg_time DESC
         """)
         rows = cur.fetchall()
     except Exception as e:
-        # 尝试旧版表结构
-        try:
-            cur = conn.execute("""
-                SELECT id, uuid, pk, created_at, last_reg_time, note
-                FROM peers
-                ORDER BY last_reg_time DESC
-            """)
-            rows = cur.fetchall()
-        except Exception as e2:
-            conn.close()
-            return jsonify({"error": str(e2), "devices": []})
+        conn.close()
+        return jsonify({"error": str(e), "devices": []})
 
     conn.close()
 
     devices = []
     online_count = 0
     for row in rows:
-        last_ts = row["last_reg_time"] if row["last_reg_time"] else 0
+        last_ts = normalize_ts(row["last_reg_time"]) if row["last_reg_time"] else 0
         is_online = (last_ts >= online_cutoff)
         if is_online:
             online_count += 1
@@ -122,6 +127,28 @@ def api_devices():
     })
 
 
+@app.route("/api/debug")
+@requires_auth
+def api_debug():
+    """调试接口：查看数据库原始数据"""
+    conn = get_db()
+    if conn is None:
+        return jsonify({"error": f"DB not found: {DB_PATH}"})
+    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    table = get_table_name(conn)
+    raw = []
+    if table:
+        rows = conn.execute(f"SELECT id, last_reg_time FROM {table} LIMIT 10").fetchall()
+        for r in rows:
+            ts = r[1]
+            raw.append({"id": r[0], "last_reg_time_raw": ts,
+                        "normalized_s": normalize_ts(ts) if ts else None,
+                        "readable": datetime.fromtimestamp(normalize_ts(ts)).strftime("%Y-%m-%d %H:%M:%S") if ts else None})
+    conn.close()
+    return jsonify({"db_path": DB_PATH, "tables": tables, "sample": raw,
+                    "server_now": int(time.time()), "online_timeout": ONLINE_TIMEOUT})
+
+
 @app.route("/api/stats")
 @requires_auth
 def api_stats():
@@ -130,20 +157,20 @@ def api_stats():
         return jsonify({"error": "db not found"})
     now_ts = int(time.time())
     online_cutoff = now_ts - ONLINE_TIMEOUT
+    table = get_table_name(conn)
+    if not table:
+        conn.close()
+        return jsonify({"error": "找不到表"})
     try:
-        total = conn.execute("SELECT COUNT(*) FROM peer").fetchone()[0]
+        total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        # 兼容毫秒和秒时间戳
         online = conn.execute(
-            "SELECT COUNT(*) FROM peer WHERE last_reg_time >= ?", (online_cutoff,)
+            f"SELECT COUNT(*) FROM {table} WHERE last_reg_time >= ? OR last_reg_time >= ?",
+            (online_cutoff, online_cutoff * 1000)
         ).fetchone()[0]
-    except Exception:
-        try:
-            total = conn.execute("SELECT COUNT(*) FROM peers").fetchone()[0]
-            online = conn.execute(
-                "SELECT COUNT(*) FROM peers WHERE last_reg_time >= ?", (online_cutoff,)
-            ).fetchone()[0]
-        except Exception as e:
-            conn.close()
-            return jsonify({"error": str(e)})
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": str(e)})
     conn.close()
     return jsonify({"total": total, "online": online, "offline": total - online})
 
