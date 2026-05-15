@@ -22,13 +22,6 @@ PANEL_PASSWORD = os.environ.get("PANEL_PASSWORD", "admin888")  # 面板访问密
 ONLINE_TIMEOUT  = int(os.environ.get("ONLINE_TIMEOUT", "35"))   # 秒内有心跳视为在线
 
 
-def normalize_ts(ts):
-    """兼容秒级和毫秒级时间戳，统一转为秒"""
-    if ts and ts > 1e10:  # 毫秒级（13位）
-        return ts / 1000
-    return ts
-
-
 def get_table_name(conn):
     """自动检测表名 peer 或 peers"""
     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
@@ -36,6 +29,30 @@ def get_table_name(conn):
         return "peer"
     if "peers" in tables:
         return "peers"
+    return None
+
+
+def get_columns(conn, table):
+    """获取表的所有列名"""
+    return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def parse_info_ts(info_str):
+    """从 info JSON 字段提取时间戳（如果有）"""
+    if not info_str:
+        return None
+    try:
+        import json
+        info = json.loads(info_str)
+        # 常见字段名
+        for key in ("last_online", "last_reg_time", "reg_time", "timestamp"):
+            if key in info:
+                ts = info[key]
+                if ts and ts > 1e10:
+                    ts = ts / 1000
+                return ts
+    except Exception:
+        pass
     return None
 # ─────────────────────────────────────────────────────
 
@@ -82,12 +99,17 @@ def api_devices():
     if not table:
         conn.close()
         return jsonify({"error": "找不到 peer/peers 表", "devices": []})
+
+    cols = get_columns(conn, table)
+    has_last_reg = "last_reg_time" in cols
+    has_status   = "status" in cols
+    has_info     = "info" in cols
+    has_note     = "note" in cols
+    has_created  = "created_at" in cols
+
     try:
-        cur = conn.execute(f"""
-            SELECT id, uuid, pk, created_at, last_reg_time, note
-            FROM {table}
-            ORDER BY last_reg_time DESC
-        """)
+        order_col = "last_reg_time" if has_last_reg else ("created_at" if has_created else "id")
+        cur = conn.execute(f"SELECT * FROM {table} ORDER BY {order_col} DESC")
         rows = cur.fetchall()
     except Exception as e:
         conn.close()
@@ -97,25 +119,41 @@ def api_devices():
 
     devices = []
     online_count = 0
+    now_ts = int(time.time())
+    online_cutoff = now_ts - ONLINE_TIMEOUT
+
     for row in rows:
-        last_ts = normalize_ts(row["last_reg_time"]) if row["last_reg_time"] else 0
-        is_online = (last_ts >= online_cutoff)
+        row_dict = dict(row)
+
+        # 判断在线：优先 last_reg_time，其次 status==1，其次 info 里的时间戳
+        is_online = False
+        last_seen = "未知"
+
+        if has_last_reg and row_dict.get("last_reg_time"):
+            raw_ts = row_dict["last_reg_time"]
+            ts = raw_ts / 1000 if raw_ts > 1e10 else raw_ts
+            is_online = (ts >= online_cutoff)
+            last_seen = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        elif has_status and row_dict.get("status") is not None:
+            # status=1 表示在线（hbbs 实时更新）
+            is_online = (row_dict["status"] == 1)
+            if has_created and row_dict.get("created_at"):
+                last_seen = str(row_dict["created_at"])
+        elif has_info:
+            ts = parse_info_ts(row_dict.get("info"))
+            if ts:
+                is_online = (ts >= online_cutoff)
+                last_seen = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+
         if is_online:
             online_count += 1
 
-        # 转换时间戳为可读时间
-        if last_ts:
-            last_seen = datetime.fromtimestamp(last_ts).strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            last_seen = "未知"
-
         devices.append({
-            "id":         row["id"],
-            "uuid":       row["uuid"] or "",
-            "online":     is_online,
-            "last_seen":  last_seen,
-            "last_ts":    last_ts,
-            "note":       row["note"] or "",
+            "id":        str(row_dict.get("id", "")),
+            "online":    is_online,
+            "last_seen": last_seen,
+            "note":      str(row_dict.get("note", "") or ""),
+            "status":    row_dict.get("status", ""),
         })
 
     return jsonify({
@@ -137,16 +175,16 @@ def api_debug():
     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
     table = get_table_name(conn)
     raw = []
+    cols = []
     if table:
-        rows = conn.execute(f"SELECT id, last_reg_time FROM {table} LIMIT 10").fetchall()
+        cols = get_columns(conn, table)
+        rows = conn.execute(f"SELECT * FROM {table} LIMIT 5").fetchall()
         for r in rows:
-            ts = r[1]
-            raw.append({"id": r[0], "last_reg_time_raw": ts,
-                        "normalized_s": normalize_ts(ts) if ts else None,
-                        "readable": datetime.fromtimestamp(normalize_ts(ts)).strftime("%Y-%m-%d %H:%M:%S") if ts else None})
+            raw.append(dict(r))
     conn.close()
-    return jsonify({"db_path": DB_PATH, "tables": tables, "sample": raw,
-                    "server_now": int(time.time()), "online_timeout": ONLINE_TIMEOUT})
+    return jsonify({"db_path": DB_PATH, "tables": tables, "columns": cols,
+                    "sample": raw, "server_now": int(time.time()),
+                    "online_timeout": ONLINE_TIMEOUT})
 
 
 @app.route("/api/stats")
@@ -161,13 +199,20 @@ def api_stats():
     if not table:
         conn.close()
         return jsonify({"error": "找不到表"})
+    cols = get_columns(conn, table)
     try:
         total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        # 兼容毫秒和秒时间戳
-        online = conn.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE last_reg_time >= ? OR last_reg_time >= ?",
-            (online_cutoff, online_cutoff * 1000)
-        ).fetchone()[0]
+        if "last_reg_time" in cols:
+            online = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE last_reg_time >= ? OR last_reg_time >= ?",
+                (online_cutoff, online_cutoff * 1000)
+            ).fetchone()[0]
+        elif "status" in cols:
+            online = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE status = 1"
+            ).fetchone()[0]
+        else:
+            online = 0
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)})
