@@ -29,7 +29,8 @@ DB_PATH = os.environ.get(
 PANEL_PASSWORD      = os.environ.get("PANEL_PASSWORD", "admin888")
 CONTAINER_NAME      = os.environ.get("CONTAINER_NAME", "rustdesk_knel-rustdesk_KNEL-1")
 HBBS_PORT           = int(os.environ.get("HBBS_PORT", "21116"))
-ONLINE_LOG_SECONDS  = int(os.environ.get("ONLINE_LOG_SECONDS", "60"))  # 日志窗口秒数
+ONLINE_LOG_SECONDS  = int(os.environ.get("ONLINE_LOG_SECONDS", "60"))
+ACTIVE_DAYS         = int(os.environ.get("ACTIVE_DAYS", "7"))  # N天内注册视为活跃
 
 
 def get_table_name(conn):
@@ -48,36 +49,21 @@ def get_columns(conn, table):
 
 
 def get_online_ids():
-    """
-    解析 hbbs docker 容器日志，获取最近 ONLINE_LOG_SECONDS 秒内
-    出现 'registered/online/punch' 的设备 ID 集合。
-    """
-    online_ids = set()
-    docker_bin = None
-    for p in ("/usr/bin/docker", "/usr/local/bin/docker"):
-        if os.path.exists(p):
-            docker_bin = p
-            break
-    if not docker_bin:
-        return online_ids
+    """返回空集合（hbbs不记录实时在线状态，改用活跃天数判断）"""
+    return set()
+
+
+def days_ago(created_at_str):
+    """计算 created_at 距今多少天，返回 float，解析失败返回 None"""
+    if not created_at_str:
+        return None
     try:
-        since = f"{ONLINE_LOG_SECONDS}s"
-        result = subprocess.run(
-            [docker_bin, "logs", "--since", since, CONTAINER_NAME],
-            capture_output=True, text=True, timeout=10
-        )
-        output = result.stdout + result.stderr
-        # hbbs 日志示例:
-        # [2024-01-01 00:00:00] registered peer 1234567890
-        # punch hole from 1.2.3.4:1234 (1234567890)
-        # got peer 1234567890
-        import re
-        # 匹配各种日志格式中的纯数字设备ID（9-10位）
-        ids = re.findall(r'\b(\d{9,10})\b', output)
-        online_ids = set(ids)
+        # 格式: 2026-04-17 17:05:49
+        dt = datetime.strptime(str(created_at_str).strip()[:19], "%Y-%m-%d %H:%M:%S")
+        delta = datetime.now() - dt
+        return delta.total_seconds() / 86400
     except Exception:
-        pass
-    return online_ids
+        return None
 
 
 def extract_ip(info_str):
@@ -167,34 +153,42 @@ def api_devices():
 
     conn.close()
 
-    # 通过 docker logs 获取最近活跃的设备 ID 集合
-    online_ids = get_online_ids()
-
     devices = []
-    online_count = 0
+    active_count = 0
 
     for row in rows:
         row_dict = dict(row)
-        dev_id  = str(safe_val(row_dict.get("id", ""))).strip()
-        dev_ip  = extract_ip(row_dict.get("info", "")) if has_info else ""
-        is_online = dev_id in online_ids
-        if is_online:
-            online_count += 1
+        dev_id   = str(safe_val(row_dict.get("id", ""))).strip()
+        dev_ip   = extract_ip(row_dict.get("info", "")) if has_info else ""
+        reg_time = str(row_dict.get("created_at", "") or "")
+        d = days_ago(reg_time)
+        is_active = (d is not None and d <= ACTIVE_DAYS)
+        if is_active:
+            active_count += 1
 
-        last_seen = str(row_dict.get("created_at", "未知") or "未知")
+        # 友好显示距今时间
+        if d is None:
+            age_str = "未知"
+        elif d < 1/24:
+            age_str = f"{int(d*1440)}分钟前注册"
+        elif d < 1:
+            age_str = f"{int(d*24)}小时前注册"
+        else:
+            age_str = f"{int(d)}天前注册"
 
         devices.append({
             "id":        dev_id,
-            "online":    is_online,
-            "last_seen": last_seen,
+            "online":    is_active,
+            "last_seen": reg_time,
+            "age":       age_str,
             "ip":        dev_ip,
             "note":      safe_val(row_dict.get("note", "")),
         })
 
     return jsonify({
         "total":        len(devices),
-        "online_count": online_count,
-        "offline_count": len(devices) - online_count,
+        "online_count": active_count,
+        "offline_count": len(devices) - active_count,
         "server_time":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "devices":      devices,
     })
@@ -248,8 +242,6 @@ def api_stats():
     conn = get_db()
     if conn is None:
         return jsonify({"error": "db not found"})
-    now_ts = int(time.time())
-    online_cutoff = now_ts - ONLINE_TIMEOUT
     table = get_table_name(conn)
     if not table:
         conn.close()
@@ -257,10 +249,10 @@ def api_stats():
     try:
         total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         cols = get_columns(conn, table)
-        online_ids = get_online_ids()
-        if online_ids:
-            rows_id = conn.execute(f"SELECT id FROM {table}").fetchall()
-            online = sum(1 for r in rows_id if str(r[0]).strip() in online_ids)
+        if "created_at" in cols:
+            online = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE created_at >= datetime('now', '-{ACTIVE_DAYS} days', 'localtime')"
+            ).fetchone()[0]
         else:
             online = 0
     except Exception as e:
@@ -451,9 +443,9 @@ function renderTable() {
         <span class="device-id">${escHtml(d.id)}</span>
         <button class="copy-btn" onclick="copyText('${escHtml(d.id)}')" title="复制ID">📋</button>
       </td>
-      <td><span class="badge ${d.online ? 'badge-online' : 'badge-offline'}">${d.online ? '● 在线' : '○ 离线'}</span></td>
+      <td><span class="badge ${d.online ? 'badge-online' : 'badge-offline'}">${d.online ? '● 活跃' : '○ 超期'}</span></td>
       <td style="font-family:monospace;font-size:13px;color:#aaa">${escHtml(d.ip||'')}</td>
-      <td>${escHtml(d.last_seen)}</td>
+      <td title="${escHtml(d.last_seen)}">${escHtml(d.age||d.last_seen)}</td>
       <td style="color:#666">${escHtml(d.note)}</td>
     </tr>
   `).join('');
