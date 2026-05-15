@@ -99,14 +99,27 @@ def extract_ip(info_str):
     if not info_str:
         return ""
     try:
+        if isinstance(info_str, bytes):
+            info_str = info_str.decode("utf-8", errors="ignore")
         d = json.loads(info_str)
         ip = d.get("ip", "")
-        # 去掉 ::ffff: 前缀
         if ip.startswith("::ffff:"):
             ip = ip[7:]
         return ip
     except Exception:
         return ""
+
+
+def safe_val(v):
+    """将数据库值转为 JSON 安全类型"""
+    if isinstance(v, bytes):
+        try:
+            return v.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+    if v is None:
+        return ""
+    return v
 # ─────────────────────────────────────────────────────
 
 
@@ -184,11 +197,11 @@ def api_devices():
         last_seen = str(row_dict.get("created_at", "未知") or "未知")
 
         devices.append({
-            "id":        str(row_dict.get("id", "")),
+            "id":        safe_val(row_dict.get("id", "")),
             "online":    is_online,
             "last_seen": last_seen,
             "ip":        dev_ip,
-            "note":      str(row_dict.get("note", "") or ""),
+            "note":      safe_val(row_dict.get("note", "")),
         })
 
     return jsonify({
@@ -215,7 +228,7 @@ def api_debug():
         cols = get_columns(conn, table)
         rows = conn.execute(f"SELECT * FROM {table} LIMIT 5").fetchall()
         for r in rows:
-            raw.append(dict(r))
+            raw.append({k: safe_val(v) for k, v in dict(r).items()})
     conn.close()
     online_ips = get_online_ips()
     return jsonify({"db_path": DB_PATH, "tables": tables, "columns": cols,
