@@ -26,9 +26,10 @@ DB_PATH = os.environ.get(
     "RUSTDESK_DB",
     "/www/dk_project/dk_app/rustdesk/rustdesk_KNEL/data/db_v2.sqlite3"
 )
-PANEL_PASSWORD    = os.environ.get("PANEL_PASSWORD", "admin888")
-CONTAINER_NAME    = os.environ.get("CONTAINER_NAME", "rustdesk_knel-rustdesk_KNEL-1")
-HBBS_PORT         = int(os.environ.get("HBBS_PORT", "21116"))
+PANEL_PASSWORD      = os.environ.get("PANEL_PASSWORD", "admin888")
+CONTAINER_NAME      = os.environ.get("CONTAINER_NAME", "rustdesk_knel-rustdesk_KNEL-1")
+HBBS_PORT           = int(os.environ.get("HBBS_PORT", "21116"))
+ONLINE_LOG_SECONDS  = int(os.environ.get("ONLINE_LOG_SECONDS", "60"))  # 日志窗口秒数
 
 
 def get_table_name(conn):
@@ -46,98 +47,37 @@ def get_columns(conn, table):
     return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
 
 
-def get_online_ips():
+def get_online_ids():
     """
-    在宿主机直接用 ss/netstat 查询 hbbs 端口的已建立连接。
-    hbbs 映射到宿主机端口 HBBS_PORT（默认21116），
-    连接中的远端 IP 即为在线设备 IP。
+    解析 hbbs docker 容器日志，获取最近 ONLINE_LOG_SECONDS 秒内
+    出现 'registered/online/punch' 的设备 ID 集合。
     """
-    ips = set()
-    # 方案1: ss（Ubuntu 18+）
-    for cmd in (
-        ["ss", "-tunp"],           # TCP+UDP
-        ["netstat", "-tun"],
-    ):
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            if result.returncode != 0:
-                continue
-            for line in result.stdout.splitlines():
-                if f":{HBBS_PORT}" not in line:
-                    continue
-                parts = line.split()
-                for part in parts:
-                    # 格式: 1.2.3.4:PORT 或 ::ffff:1.2.3.4:PORT
-                    if ":" not in part:
-                        continue
-                    host = part.rsplit(":", 1)[0]
-                    if host.startswith("::ffff:"):
-                        host = host[7:]
-                    host = host.strip("[]")
-                    if host and "." in host:
-                        segs = host.split(".")
-                        if len(segs) == 4 and all(s.isdigit() for s in segs):
-                            # 排除本机地址
-                            if not host.startswith("127.") and host != "0.0.0.0":
-                                ips.add(host)
-            if ips:
-                break
-        except Exception:
-            continue
-
-    # 方案2: 读取 /proc/net/tcp 和 tcp6（内核级，无需工具）
-    if not ips:
-        ips = _get_ips_from_proc()
-
-    return ips
-
-
-def _parse_proc_net(path):
-    """解析 /proc/net/tcp、tcp6、udp、udp6，返回远端IP集合"""
-    ips = set()
-    port_hex = format(HBBS_PORT, "04X")
-    is_udp = "udp" in path
+    online_ids = set()
+    docker_bin = None
+    for p in ("/usr/bin/docker", "/usr/local/bin/docker"):
+        if os.path.exists(p):
+            docker_bin = p
+            break
+    if not docker_bin:
+        return online_ids
     try:
-        with open(path) as f:
-            for line in f.readlines()[1:]:
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                state = parts[3]
-                # TCP: 01=ESTABLISHED; UDP: 不限状态（07=活跃，01也有）
-                if not is_udp and state != "01":
-                    continue
-                local = parts[1]
-                remote = parts[2]
-                local_port = local.split(":")[1] if ":" in local else ""
-                if local_port.upper() != port_hex:
-                    continue
-                remote_hex = remote.split(":")[0]
-                try:
-                    if len(remote_hex) == 8:
-                        b = bytes.fromhex(remote_hex)
-                        ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
-                    elif len(remote_hex) == 32:
-                        b = bytes.fromhex(remote_hex[24:32])
-                        ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
-                    else:
-                        continue
-                except Exception:
-                    continue
-                if not ip.startswith("127.") and ip != "0.0.0.0":
-                    ips.add(ip)
+        since = f"{ONLINE_LOG_SECONDS}s"
+        result = subprocess.run(
+            [docker_bin, "logs", "--since", since, CONTAINER_NAME],
+            capture_output=True, text=True, timeout=10
+        )
+        output = result.stdout + result.stderr
+        # hbbs 日志示例:
+        # [2024-01-01 00:00:00] registered peer 1234567890
+        # punch hole from 1.2.3.4:1234 (1234567890)
+        # got peer 1234567890
+        import re
+        # 匹配各种日志格式中的纯数字设备ID（9-10位）
+        ids = re.findall(r'\b(\d{9,10})\b', output)
+        online_ids = set(ids)
     except Exception:
         pass
-    return ips
-
-
-def _get_ips_from_proc():
-    """同时检测 TCP 和 UDP（RustDesk 心跳主要走 UDP 21116）"""
-    ips = set()
-    for path in ("/proc/net/udp6", "/proc/net/udp",
-                 "/proc/net/tcp6", "/proc/net/tcp"):
-        ips |= _parse_proc_net(path)
-    return ips
+    return online_ids
 
 
 def extract_ip(info_str):
@@ -227,23 +167,24 @@ def api_devices():
 
     conn.close()
 
-    # 获取当前活跃连接IP（判断在线）
-    online_ips = get_online_ips()
+    # 通过 docker logs 获取最近活跃的设备 ID 集合
+    online_ids = get_online_ids()
 
     devices = []
     online_count = 0
 
     for row in rows:
         row_dict = dict(row)
-        dev_ip = extract_ip(row_dict.get("info", "")) if has_info else ""
-        is_online = bool(dev_ip and dev_ip in online_ips)
+        dev_id  = str(safe_val(row_dict.get("id", ""))).strip()
+        dev_ip  = extract_ip(row_dict.get("info", "")) if has_info else ""
+        is_online = dev_id in online_ids
         if is_online:
             online_count += 1
 
         last_seen = str(row_dict.get("created_at", "未知") or "未知")
 
         devices.append({
-            "id":        safe_val(row_dict.get("id", "")),
+            "id":        dev_id,
             "online":    is_online,
             "last_seen": last_seen,
             "ip":        dev_ip,
@@ -276,51 +217,29 @@ def api_debug():
         for r in rows:
             raw.append({k: safe_val(v) for k, v in dict(r).items()})
     conn.close()
-    online_ips = get_online_ips()
+    online_ids = get_online_ids()
 
-    # 额外诊断：列出宿主机所有 ESTABLISHED 连接（前30条）
-    diag_lines = []
-    try:
-        r = subprocess.run(["ss", "-tn", "state", "established"],
-                           capture_output=True, text=True, timeout=5)
-        diag_lines = r.stdout.splitlines()[:30]
-    except Exception:
-        pass
-
-    # docker port 映射
-    port_map = []
+    # docker logs 原始样本（最近20行）
+    log_sample = []
     try:
         for docker_bin in ("/usr/bin/docker", "/usr/local/bin/docker"):
             if os.path.exists(docker_bin):
-                r = subprocess.run([docker_bin, "port", CONTAINER_NAME],
-                                   capture_output=True, text=True, timeout=5)
-                port_map = r.stdout.splitlines()
+                r = subprocess.run(
+                    [docker_bin, "logs", "--since", f"{ONLINE_LOG_SECONDS}s",
+                     "--tail", "30", CONTAINER_NAME],
+                    capture_output=True, text=True, timeout=10
+                )
+                log_sample = (r.stdout + r.stderr).splitlines()[-20:]
                 break
-    except Exception:
-        pass
-
-    # 读取 /proc/net/udp 原始内容（含21116的行）
-    udp_raw = []
-    try:
-        port_hex = format(HBBS_PORT, "04X")
-        for p in ("/proc/net/udp6", "/proc/net/udp"):
-            try:
-                with open(p) as f:
-                    for line in f.readlines():
-                        if port_hex in line.upper():
-                            udp_raw.append(f"{p}: {line.strip()}")
-            except Exception:
-                pass
     except Exception:
         pass
 
     return jsonify({"db_path": DB_PATH, "tables": tables, "columns": cols,
                     "sample": raw, "server_now": int(time.time()),
-                    "container": CONTAINER_NAME, "hbbs_port": HBBS_PORT,
-                    "online_ips_detected": list(online_ips),
-                    "docker_port_map": port_map,
-                    "ss_established_sample": diag_lines,
-                    "proc_udp_raw": udp_raw})
+                    "container": CONTAINER_NAME,
+                    "online_log_seconds": ONLINE_LOG_SECONDS,
+                    "online_ids_detected": list(online_ids),
+                    "docker_log_sample": log_sample})
 
 
 @app.route("/api/stats")
@@ -337,13 +256,13 @@ def api_stats():
         return jsonify({"error": "找不到表"})
     try:
         total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        online_ips = get_online_ips()
         cols = get_columns(conn, table)
-        if "info" in cols and online_ips:
-            rows = conn.execute(f"SELECT info FROM {table}").fetchall()
-            online = sum(1 for r in rows if extract_ip(r[0]) in online_ips)
+        online_ids = get_online_ids()
+        if online_ids:
+            rows_id = conn.execute(f"SELECT id FROM {table}").fetchall()
+            online = sum(1 for r in rows_id if str(r[0]).strip() in online_ids)
         else:
-            online = len(online_ips)  # 粗略估算
+            online = 0
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)})
