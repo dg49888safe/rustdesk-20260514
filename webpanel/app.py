@@ -55,8 +55,8 @@ def get_online_ips():
     ips = set()
     # 方案1: ss（Ubuntu 18+）
     for cmd in (
-        ["ss", "-tn", "state", "established"],
-        ["netstat", "-tn"],
+        ["ss", "-tunp"],           # TCP+UDP
+        ["netstat", "-tun"],
     ):
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
@@ -92,41 +92,46 @@ def get_online_ips():
     return ips
 
 
-def _get_ips_from_proc():
-    """从 /proc/net/tcp6 读取已建立连接，解析在线IP"""
+def _parse_proc_net(path, tcp_only=False):
+    """解析 /proc/net/tcp、tcp6、udp、udp6，返回远端IP集合"""
     ips = set()
     port_hex = format(HBBS_PORT, "04X")
-    for path in ("/proc/net/tcp6", "/proc/net/tcp"):
-        try:
-            with open(path) as f:
-                for line in f.readlines()[1:]:
-                    parts = line.split()
-                    if len(parts) < 4:
-                        continue
-                    # state 01 = ESTABLISHED
-                    if parts[3] != "01":
-                        continue
-                    local = parts[1]
-                    remote = parts[2]
-                    local_port = local.split(":")[1] if ":" in local else ""
-                    if local_port.upper() != port_hex:
-                        continue
-                    # 解析远端 IP（小端序 hex）
-                    remote_hex = remote.split(":")[0]
-                    if len(remote_hex) == 8:
-                        # IPv4
-                        b = bytes.fromhex(remote_hex)
-                        ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
-                    elif len(remote_hex) == 32:
-                        # IPv4-mapped IPv6: 后8位是IPv4
-                        b = bytes.fromhex(remote_hex[24:32])
-                        ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
-                    else:
-                        continue
-                    if not ip.startswith("127.") and ip != "0.0.0.0":
-                        ips.add(ip)
-        except Exception:
-            continue
+    try:
+        with open(path) as f:
+            for line in f.readlines()[1:]:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                # TCP: state 01=ESTABLISHED; UDP: state 01=活跃
+                if parts[3] not in ("01", "07"):
+                    continue
+                local = parts[1]
+                remote = parts[2]
+                local_port = local.split(":")[1] if ":" in local else ""
+                if local_port.upper() != port_hex:
+                    continue
+                remote_hex = remote.split(":")[0]
+                if len(remote_hex) == 8:
+                    b = bytes.fromhex(remote_hex)
+                    ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
+                elif len(remote_hex) == 32:
+                    b = bytes.fromhex(remote_hex[24:32])
+                    ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
+                else:
+                    continue
+                if not ip.startswith("127.") and ip != "0.0.0.0":
+                    ips.add(ip)
+    except Exception:
+        pass
+    return ips
+
+
+def _get_ips_from_proc():
+    """同时检测 TCP 和 UDP（RustDesk 心跳主要走 UDP 21116）"""
+    ips = set()
+    for path in ("/proc/net/udp6", "/proc/net/udp",
+                 "/proc/net/tcp6", "/proc/net/tcp"):
+        ips |= _parse_proc_net(path)
     return ips
 
 
