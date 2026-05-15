@@ -48,50 +48,86 @@ def get_columns(conn, table):
 
 def get_online_ips():
     """
-    通过 docker exec 查询容器内活跃的 TCP 连接 IP 集合。
-    hbbs 默认监听 21116，连接中的 IP 即为在线设备。
+    在宿主机直接用 ss/netstat 查询 hbbs 端口的已建立连接。
+    hbbs 映射到宿主机端口 HBBS_PORT（默认21116），
+    连接中的远端 IP 即为在线设备 IP。
     """
-    # 尝试常见 docker 路径
-    docker_bin = None
-    for p in ("/usr/bin/docker", "/usr/local/bin/docker", "docker"):
+    ips = set()
+    # 方案1: ss（Ubuntu 18+）
+    for cmd in (
+        ["ss", "-tn", "state", "established"],
+        ["netstat", "-tn"],
+    ):
         try:
-            r = subprocess.run([p, "--version"], capture_output=True, timeout=3)
-            if r.returncode == 0:
-                docker_bin = p
-                break
-        except Exception:
-            continue
-
-    if not docker_bin:
-        return set()
-
-    try:
-        result = subprocess.run(
-            [docker_bin, "exec", CONTAINER_NAME, "sh", "-c",
-             f"ss -tn state established 2>/dev/null | grep ':{HBBS_PORT}' || "
-             f"netstat -tn 2>/dev/null | grep ':{HBBS_PORT}'"],
-            capture_output=True, text=True, timeout=8
-        )
-        ips = set()
-        for line in result.stdout.splitlines():
-            parts = line.split()
-            for part in parts:
-                # 去掉端口号部分
-                if ":" in part:
-                    # IPv4-mapped: ::ffff:1.2.3.4:port 或 1.2.3.4:port
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                continue
+            for line in result.stdout.splitlines():
+                if f":{HBBS_PORT}" not in line:
+                    continue
+                parts = line.split()
+                for part in parts:
+                    # 格式: 1.2.3.4:PORT 或 ::ffff:1.2.3.4:PORT
+                    if ":" not in part:
+                        continue
                     host = part.rsplit(":", 1)[0]
                     if host.startswith("::ffff:"):
                         host = host[7:]
                     host = host.strip("[]")
-                else:
-                    host = part
-                if host and "." in host:
-                    segs = host.split(".")
-                    if len(segs) == 4 and all(s.isdigit() for s in segs):
-                        ips.add(host)
-        return ips
-    except Exception:
-        return set()
+                    if host and "." in host:
+                        segs = host.split(".")
+                        if len(segs) == 4 and all(s.isdigit() for s in segs):
+                            # 排除本机地址
+                            if not host.startswith("127.") and host != "0.0.0.0":
+                                ips.add(host)
+            if ips:
+                break
+        except Exception:
+            continue
+
+    # 方案2: 读取 /proc/net/tcp 和 tcp6（内核级，无需工具）
+    if not ips:
+        ips = _get_ips_from_proc()
+
+    return ips
+
+
+def _get_ips_from_proc():
+    """从 /proc/net/tcp6 读取已建立连接，解析在线IP"""
+    ips = set()
+    port_hex = format(HBBS_PORT, "04X")
+    for path in ("/proc/net/tcp6", "/proc/net/tcp"):
+        try:
+            with open(path) as f:
+                for line in f.readlines()[1:]:
+                    parts = line.split()
+                    if len(parts) < 4:
+                        continue
+                    # state 01 = ESTABLISHED
+                    if parts[3] != "01":
+                        continue
+                    local = parts[1]
+                    remote = parts[2]
+                    local_port = local.split(":")[1] if ":" in local else ""
+                    if local_port.upper() != port_hex:
+                        continue
+                    # 解析远端 IP（小端序 hex）
+                    remote_hex = remote.split(":")[0]
+                    if len(remote_hex) == 8:
+                        # IPv4
+                        b = bytes.fromhex(remote_hex)
+                        ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
+                    elif len(remote_hex) == 32:
+                        # IPv4-mapped IPv6: 后8位是IPv4
+                        b = bytes.fromhex(remote_hex[24:32])
+                        ip = f"{b[3]}.{b[2]}.{b[1]}.{b[0]}"
+                    else:
+                        continue
+                    if not ip.startswith("127.") and ip != "0.0.0.0":
+                        ips.add(ip)
+        except Exception:
+            continue
+    return ips
 
 
 def extract_ip(info_str):
