@@ -267,10 +267,34 @@ def api_debug():
             raw.append({k: safe_val(v) for k, v in dict(r).items()})
     conn.close()
     online_ips = get_online_ips()
+
+    # 额外诊断：列出宿主机所有 ESTABLISHED 连接（前30条）
+    diag_lines = []
+    try:
+        r = subprocess.run(["ss", "-tn", "state", "established"],
+                           capture_output=True, text=True, timeout=5)
+        diag_lines = r.stdout.splitlines()[:30]
+    except Exception:
+        pass
+
+    # docker port 映射
+    port_map = []
+    try:
+        for docker_bin in ("/usr/bin/docker", "/usr/local/bin/docker"):
+            if os.path.exists(docker_bin):
+                r = subprocess.run([docker_bin, "port", CONTAINER_NAME],
+                                   capture_output=True, text=True, timeout=5)
+                port_map = r.stdout.splitlines()
+                break
+    except Exception:
+        pass
+
     return jsonify({"db_path": DB_PATH, "tables": tables, "columns": cols,
                     "sample": raw, "server_now": int(time.time()),
                     "container": CONTAINER_NAME, "hbbs_port": HBBS_PORT,
-                    "online_ips_detected": list(online_ips)})
+                    "online_ips_detected": list(online_ips),
+                    "docker_port_map": port_map,
+                    "ss_established_sample": diag_lines})
 
 
 @app.route("/api/stats")
