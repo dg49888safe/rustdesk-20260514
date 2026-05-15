@@ -15,6 +15,12 @@ from functools import wraps
 
 app = Flask(__name__)
 
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    import traceback
+    return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
 # ── 配置 ──────────────────────────────────────────────
 DB_PATH = os.environ.get(
     "RUSTDESK_DB",
@@ -45,22 +51,44 @@ def get_online_ips():
     通过 docker exec 查询容器内活跃的 TCP 连接 IP 集合。
     hbbs 默认监听 21116，连接中的 IP 即为在线设备。
     """
+    # 尝试常见 docker 路径
+    docker_bin = None
+    for p in ("/usr/bin/docker", "/usr/local/bin/docker", "docker"):
+        try:
+            r = subprocess.run([p, "--version"], capture_output=True, timeout=3)
+            if r.returncode == 0:
+                docker_bin = p
+                break
+        except Exception:
+            continue
+
+    if not docker_bin:
+        return set()
+
     try:
         result = subprocess.run(
-            ["docker", "exec", CONTAINER_NAME, "sh", "-c",
-             f"ss -tn state established '( dport = :{HBBS_PORT} or sport = :{HBBS_PORT} )' 2>/dev/null || "
+            [docker_bin, "exec", CONTAINER_NAME, "sh", "-c",
+             f"ss -tn state established 2>/dev/null | grep ':{HBBS_PORT}' || "
              f"netstat -tn 2>/dev/null | grep ':{HBBS_PORT}'"],
-            capture_output=True, text=True, timeout=5
+            capture_output=True, text=True, timeout=8
         )
         ips = set()
         for line in result.stdout.splitlines():
             parts = line.split()
             for part in parts:
-                # 匹配 ::ffff:x.x.x.x 或 x.x.x.x
-                addr = part.split(":")[-1] if ":" in part else part
-                addr = addr.split("]")[0].replace("[", "")
-                if addr and addr.replace(".", "").isdigit() and "." in addr:
-                    ips.add(addr)
+                # 去掉端口号部分
+                if ":" in part:
+                    # IPv4-mapped: ::ffff:1.2.3.4:port 或 1.2.3.4:port
+                    host = part.rsplit(":", 1)[0]
+                    if host.startswith("::ffff:"):
+                        host = host[7:]
+                    host = host.strip("[]")
+                else:
+                    host = part
+                if host and "." in host:
+                    segs = host.split(".")
+                    if len(segs) == 4 and all(s.isdigit() for s in segs):
+                        ips.add(host)
         return ips
     except Exception:
         return set()
