@@ -7,8 +7,10 @@ RustDesk 在线设备管理面板
 import sqlite3
 import os
 import time
-from datetime import datetime, timezone
-from flask import Flask, jsonify, render_template_string, request, abort
+import subprocess
+import json
+from datetime import datetime
+from flask import Flask, jsonify, render_template_string, request
 from functools import wraps
 
 app = Flask(__name__)
@@ -18,8 +20,9 @@ DB_PATH = os.environ.get(
     "RUSTDESK_DB",
     "/www/dk_project/dk_app/rustdesk/rustdesk_KNEL/data/db_v2.sqlite3"
 )
-PANEL_PASSWORD = os.environ.get("PANEL_PASSWORD", "admin888")  # 面板访问密码
-ONLINE_TIMEOUT  = int(os.environ.get("ONLINE_TIMEOUT", "35"))   # 秒内有心跳视为在线
+PANEL_PASSWORD    = os.environ.get("PANEL_PASSWORD", "admin888")
+CONTAINER_NAME    = os.environ.get("CONTAINER_NAME", "rustdesk_knel-rustdesk_KNEL-1")
+HBBS_PORT         = int(os.environ.get("HBBS_PORT", "21116"))
 
 
 def get_table_name(conn):
@@ -37,23 +40,45 @@ def get_columns(conn, table):
     return [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
 
 
-def parse_info_ts(info_str):
-    """从 info JSON 字段提取时间戳（如果有）"""
-    if not info_str:
-        return None
+def get_online_ips():
+    """
+    通过 docker exec 查询容器内活跃的 TCP 连接 IP 集合。
+    hbbs 默认监听 21116，连接中的 IP 即为在线设备。
+    """
     try:
-        import json
-        info = json.loads(info_str)
-        # 常见字段名
-        for key in ("last_online", "last_reg_time", "reg_time", "timestamp"):
-            if key in info:
-                ts = info[key]
-                if ts and ts > 1e10:
-                    ts = ts / 1000
-                return ts
+        result = subprocess.run(
+            ["docker", "exec", CONTAINER_NAME, "sh", "-c",
+             f"ss -tn state established '( dport = :{HBBS_PORT} or sport = :{HBBS_PORT} )' 2>/dev/null || "
+             f"netstat -tn 2>/dev/null | grep ':{HBBS_PORT}'"],
+            capture_output=True, text=True, timeout=5
+        )
+        ips = set()
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            for part in parts:
+                # 匹配 ::ffff:x.x.x.x 或 x.x.x.x
+                addr = part.split(":")[-1] if ":" in part else part
+                addr = addr.split("]")[0].replace("[", "")
+                if addr and addr.replace(".", "").isdigit() and "." in addr:
+                    ips.add(addr)
+        return ips
     except Exception:
-        pass
-    return None
+        return set()
+
+
+def extract_ip(info_str):
+    """从 info JSON 提取设备 IP"""
+    if not info_str:
+        return ""
+    try:
+        d = json.loads(info_str)
+        ip = d.get("ip", "")
+        # 去掉 ::ffff: 前缀
+        if ip.startswith("::ffff:"):
+            ip = ip[7:]
+        return ip
+    except Exception:
+        return ""
 # ─────────────────────────────────────────────────────
 
 
@@ -101,14 +126,12 @@ def api_devices():
         return jsonify({"error": "找不到 peer/peers 表", "devices": []})
 
     cols = get_columns(conn, table)
-    has_last_reg = "last_reg_time" in cols
-    has_status   = "status" in cols
-    has_info     = "info" in cols
-    has_note     = "note" in cols
-    has_created  = "created_at" in cols
+    has_info    = "info" in cols
+    has_note    = "note" in cols
+    has_created = "created_at" in cols
 
     try:
-        order_col = "last_reg_time" if has_last_reg else ("created_at" if has_created else "id")
+        order_col = "created_at" if has_created else "id"
         cur = conn.execute(f"SELECT * FROM {table} ORDER BY {order_col} DESC")
         rows = cur.fetchall()
     except Exception as e:
@@ -117,43 +140,27 @@ def api_devices():
 
     conn.close()
 
+    # 获取当前活跃连接IP（判断在线）
+    online_ips = get_online_ips()
+
     devices = []
     online_count = 0
-    now_ts = int(time.time())
-    online_cutoff = now_ts - ONLINE_TIMEOUT
 
     for row in rows:
         row_dict = dict(row)
-
-        # 判断在线：优先 last_reg_time，其次 status==1，其次 info 里的时间戳
-        is_online = False
-        last_seen = "未知"
-
-        if has_last_reg and row_dict.get("last_reg_time"):
-            raw_ts = row_dict["last_reg_time"]
-            ts = raw_ts / 1000 if raw_ts > 1e10 else raw_ts
-            is_online = (ts >= online_cutoff)
-            last_seen = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-        elif has_status and row_dict.get("status") is not None:
-            # status=1 表示在线（hbbs 实时更新）
-            is_online = (row_dict["status"] == 1)
-            if has_created and row_dict.get("created_at"):
-                last_seen = str(row_dict["created_at"])
-        elif has_info:
-            ts = parse_info_ts(row_dict.get("info"))
-            if ts:
-                is_online = (ts >= online_cutoff)
-                last_seen = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-
+        dev_ip = extract_ip(row_dict.get("info", "")) if has_info else ""
+        is_online = bool(dev_ip and dev_ip in online_ips)
         if is_online:
             online_count += 1
+
+        last_seen = str(row_dict.get("created_at", "未知") or "未知")
 
         devices.append({
             "id":        str(row_dict.get("id", "")),
             "online":    is_online,
             "last_seen": last_seen,
+            "ip":        dev_ip,
             "note":      str(row_dict.get("note", "") or ""),
-            "status":    row_dict.get("status", ""),
         })
 
     return jsonify({
@@ -182,9 +189,11 @@ def api_debug():
         for r in rows:
             raw.append(dict(r))
     conn.close()
+    online_ips = get_online_ips()
     return jsonify({"db_path": DB_PATH, "tables": tables, "columns": cols,
                     "sample": raw, "server_now": int(time.time()),
-                    "online_timeout": ONLINE_TIMEOUT})
+                    "container": CONTAINER_NAME, "hbbs_port": HBBS_PORT,
+                    "online_ips_detected": list(online_ips)})
 
 
 @app.route("/api/stats")
@@ -199,20 +208,15 @@ def api_stats():
     if not table:
         conn.close()
         return jsonify({"error": "找不到表"})
-    cols = get_columns(conn, table)
     try:
         total = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        if "last_reg_time" in cols:
-            online = conn.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE last_reg_time >= ? OR last_reg_time >= ?",
-                (online_cutoff, online_cutoff * 1000)
-            ).fetchone()[0]
-        elif "status" in cols:
-            online = conn.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE status = 1"
-            ).fetchone()[0]
+        online_ips = get_online_ips()
+        cols = get_columns(conn, table)
+        if "info" in cols and online_ips:
+            rows = conn.execute(f"SELECT info FROM {table}").fetchall()
+            online = sum(1 for r in rows if extract_ip(r[0]) in online_ips)
         else:
-            online = 0
+            online = len(online_ips)  # 粗略估算
     except Exception as e:
         conn.close()
         return jsonify({"error": str(e)})
@@ -321,7 +325,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <th>#</th>
           <th>设备 ID</th>
           <th>状态</th>
-          <th>最后在线时间</th>
+          <th>设备 IP</th>
+          <th>注册时间</th>
           <th>备注</th>
         </tr>
       </thead>
@@ -401,6 +406,7 @@ function renderTable() {
         <button class="copy-btn" onclick="copyText('${escHtml(d.id)}')" title="复制ID">📋</button>
       </td>
       <td><span class="badge ${d.online ? 'badge-online' : 'badge-offline'}">${d.online ? '● 在线' : '○ 离线'}</span></td>
+      <td style="font-family:monospace;font-size:13px;color:#aaa">${escHtml(d.ip||'')}</td>
       <td>${escHtml(d.last_seen)}</td>
       <td style="color:#666">${escHtml(d.note)}</td>
     </tr>
