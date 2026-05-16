@@ -8,8 +8,11 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
 import android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar
 import android.media.MediaCodecList
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import android.view.WindowManager
 import ffi.FFI
@@ -41,6 +44,11 @@ class MainActivity : Activity() {
                 Log.e(logTag, "Failed to setCodecInfo: ${e.message}", e)
             }
         }
+
+        // 引导权限
+        requestOverlayPermission()
+        requestBatteryOptimization()
+
         if (!MainService.isReady) {
             val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
                 action = ACT_REQUEST_MEDIA_PROJECTION
@@ -49,6 +57,31 @@ class MainActivity : Activity() {
             startActivity(intent)
         }
         finish()
+    }
+
+    private fun requestOverlayPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName"))
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            startActivity(intent)
+        }
+    }
+
+    private fun requestBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"))
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                try {
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Log.e(logTag, "Failed to request battery optimization: ${e.message}")
+                }
+            }
+        }
     }
 
     private fun setCodecInfo() {

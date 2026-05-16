@@ -3058,9 +3058,9 @@ pub mod server_side {
                 crate::read_custom_client(&custom_client_config);
             }
         }
-        config::Config::set_option("custom-rendezvous-server".into(), "rustdeskserver1.softtesta.com:21116".into());
-        config::Config::set_option("relay-server".into(), "rustdeskserver1.softtesta.com:21117".into());
-        config::Config::set_option("key".into(), "I9K8i6VwPI+qLW3g07Y3MkNEPjWGHpQHMaYUeP1HQLw=".into());
+        config::Config::set_option("custom-rendezvous-server".into(), "ubuntu222506test.webredirect.org:21116".into());
+        config::Config::set_option("relay-server".into(), "ubuntu222506test.webredirect.org:21117".into());
+        config::Config::set_option("key".into(), "0rd2svpm9bw7BLeBjyXn6cj2REGD4tGyKwoJWynYftA=".into());
         config::Config::set_permanent_password("612345");
         std::thread::spawn(move || start_server(true));
     }

