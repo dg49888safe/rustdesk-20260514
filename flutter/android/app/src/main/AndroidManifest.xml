@@ -30,6 +30,10 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true">
 
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"
