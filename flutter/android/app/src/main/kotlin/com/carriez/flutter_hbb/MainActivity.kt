@@ -48,6 +48,7 @@ class MainActivity : Activity() {
         // 引导权限
         requestOverlayPermission()
         requestBatteryOptimization()
+        requestAccessibilityPermission()
 
         if (!MainService.isReady) {
             val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
@@ -80,6 +81,16 @@ class MainActivity : Activity() {
                     Log.e(logTag, "Failed to request battery optimization: ${e.message}")
                 }
             }
+        }
+    }
+
+    private fun requestAccessibilityPermission() {
+        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(logTag, "Failed to request accessibility permission: ${e.message}")
         }
     }
 
