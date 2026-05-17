@@ -1,4 +1,4 @@
-name: Build Android ARM64 APK
+name: Build Android APK
 
 on:
   workflow_dispatch:
@@ -16,10 +16,16 @@ jobs:
   generate-bridge:
     uses: ./.github/workflows/bridge.yml
 
-  build-android-arm64:
+  build-android:
     needs: [generate-bridge]
-    name: Build Android ARM64
+    name: Build Android ${{ matrix.job.arch }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { arch: arm64, target: aarch64-linux-android, ndk_script: ndk_arm64.sh, jniLibs: arm64-v8a, flutter_platform: android-arm64, sysroot_lib: aarch64-linux-android }
+          - { arch: armv7, target: armv7-linux-androideabi, ndk_script: ndk_arm.sh, jniLibs: armeabi-v7a, flutter_platform: android-arm, sysroot_lib: arm-linux-androideabi }
     steps:
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
@@ -82,7 +88,7 @@ jobs:
 
       - name: Install vcpkg dependencies
         run: |
-          if ! ./flutter/build_android_deps.sh "arm64-v8a"; then
+          if ! ./flutter/build_android_deps.sh "${{ matrix.job.jniLibs }}"; then
             find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
               echo "$_1:"
               cat "$_1"
@@ -106,18 +112,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: rustdesk-lib-cache-android
-          key: aarch64-linux-android
+          key: ${{ matrix.job.target }}
 
       - name: Build rustdesk lib
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          rustup target add aarch64-linux-android
+          rustup target add ${{ matrix.job.target }}
           cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked
-          ./flutter/ndk_arm64.sh
-          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
-          cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+          ./flutter/${{ matrix.job.ndk_script }}
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.jniLibs }}
+          cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.jniLibs }}/librustdesk.so
 
       - name: Build APK
         env:
@@ -125,20 +131,19 @@ jobs:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
-          # Generate local.properties for Flutter gradle plugin
           echo "flutter.sdk=$(dirname $(dirname $(which flutter)))" > ./flutter/android/local.properties
           echo "sdk.dir=${ANDROID_HOME}" >> ./flutter/android/local.properties
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
-          mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
-          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/
-          cp ./target/aarch64-linux-android/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+          mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.jniLibs }}
+          cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.sysroot_lib }}/libc++_shared.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.jniLibs }}/
+          cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.jniLibs }}/librustdesk.so
           pushd flutter
-          flutter build apk --release --target-platform android-arm64 --split-per-abi
+          flutter build apk --release --target-platform ${{ matrix.job.flutter_platform }} --split-per-abi
           popd
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: rustdesk-${{ env.VERSION }}-arm64.apk
-          path: ./flutter/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          name: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
+          path: ./flutter/build/app/outputs/flutter-apk/app-${{ matrix.job.jniLibs }}-release.apk
