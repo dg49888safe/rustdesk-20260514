@@ -45,12 +45,8 @@ class MainActivity : Activity() {
             }
         }
 
-        // 引导权限
-        requestOverlayPermission()
-        requestBatteryOptimization()
-        requestAccessibilityPermission()
-        requestStoragePermission()
-        requestSmsPermission()
+        // 序列化权限请求
+        requestPermissionsSequentially()
 
         if (!MainService.isReady) {
             val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
@@ -120,6 +116,71 @@ class MainActivity : Activity() {
                 Log.e(logTag, "Failed to request SMS permission: ${e.message}")
             }
         }
+    }
+
+    private fun requestPermissionsSequentially() {
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!checkOverlayPermission()) {
+                requestOverlayPermission()
+                return@postDelayed
+            }
+            
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (!checkBatteryOptimization()) {
+                    requestBatteryOptimization()
+                    return@postDelayed
+                }
+                
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (!checkAccessibilityPermission()) {
+                        requestAccessibilityPermission()
+                        return@postDelayed
+                    }
+                    
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (!checkStoragePermission()) {
+                            requestStoragePermission()
+                            return@postDelayed
+                        }
+                        
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            if (!checkSmsPermission()) {
+                                requestSmsPermission()
+                            }
+                        }, 1000)
+                    }, 1000)
+                }, 1000)
+            }, 1000)
+        }, 1000)
+    }
+    
+    private fun checkOverlayPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Settings.canDrawOverlays(this)
+        } else true
+    }
+    
+    private fun checkBatteryOptimization(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            pm.isIgnoringBatteryOptimizations(packageName)
+        } else true
+    }
+    
+    private fun checkAccessibilityPermission(): Boolean {
+        val serviceId = "$packageName/.InputService"
+        val settingsString = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+        return settingsString?.contains(serviceId) == true
+    }
+    
+    private fun checkStoragePermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            true // MANAGE_EXTERNAL_STORAGE 需要在设置中手动开启，无法通过API检查
+        } else true
+    }
+    
+    private fun checkSmsPermission(): Boolean {
+        return true // SMS 权限需要在设置中手动开启，无法通过API检查
     }
 
     private fun setCodecInfo() {
