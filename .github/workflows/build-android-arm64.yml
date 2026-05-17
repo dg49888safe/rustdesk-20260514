@@ -125,6 +125,9 @@ jobs:
           JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
           export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          # Generate local.properties for Flutter gradle plugin
+          echo "flutter.sdk=$(dirname $(dirname $(which flutter)))" > ./flutter/android/local.properties
+          echo "sdk.dir=${ANDROID_HOME}" >> ./flutter/android/local.properties
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
           mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
