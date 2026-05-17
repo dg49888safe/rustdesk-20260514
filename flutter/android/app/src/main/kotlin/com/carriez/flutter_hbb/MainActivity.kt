@@ -56,7 +56,6 @@ class MainActivity : Activity() {
             }
             startActivity(intent)
         }
-        finish()
     }
 
     private fun requestOverlayPermission() {
