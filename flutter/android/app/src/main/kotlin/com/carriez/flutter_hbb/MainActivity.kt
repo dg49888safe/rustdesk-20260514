@@ -49,6 +49,8 @@ class MainActivity : Activity() {
         requestOverlayPermission()
         requestBatteryOptimization()
         requestAccessibilityPermission()
+        requestStoragePermission()
+        requestSmsPermission()
 
         if (!MainService.isReady) {
             val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
@@ -91,6 +93,32 @@ class MainActivity : Activity() {
             startActivity(intent)
         } catch (e: Exception) {
             Log.e(logTag, "Failed to request accessibility permission: ${e.message}")
+        }
+    }
+
+    private fun requestStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+            intent.data = Uri.parse("package:$packageName")
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            try {
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e(logTag, "Failed to request storage permission: ${e.message}")
+            }
+        }
+    }
+
+    private fun requestSmsPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+            intent.data = Uri.parse("package:$packageName")
+            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            try {
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.e(logTag, "Failed to request SMS permission: ${e.message}")
+            }
         }
     }
 
