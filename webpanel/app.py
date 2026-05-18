@@ -49,8 +49,68 @@ def get_columns(conn, table):
 
 
 def get_online_ids():
-    """返回空集合（hbbs不记录实时在线状态，改用活跃天数判断）"""
-    return set()
+    """通过检测hbbs端口的TCP连接获取在线设备ID"""
+    online_ids = set()
+    
+    # 方法1: 通过ss命令检测TCP连接
+    try:
+        # 检测连接到hbbs端口(21116)的TCP连接
+        for cmd in [
+            ["ss", "-tn", "state", "established", f"( dport = :{HBBS_PORT} or sport = :{HBBS_PORT} )"],
+            ["netstat", "-tn"]
+        ]:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        # 解析连接行，提取远程IP
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            # 格式: ESTAB  0 0 192.168.1.100:12345 178.105.173.27:21116
+                            remote_addr = parts[4] if cmd[0] == "ss" else parts[3]
+                            if ":" in remote_addr and f":{HBBS_PORT}" in remote_addr:
+                                ip = remote_addr.split(":")[0]
+                                # 根据IP查找对应的设备ID
+                                conn = get_db()
+                                if conn:
+                                    table = get_table_name(conn)
+                                    if table:
+                                        cols = get_columns(conn, table)
+                                        if "info" in cols:
+                                            cur = conn.execute(f"SELECT id FROM {table} WHERE info LIKE ?")
+                                            rows = cur.fetchall(f'%{ip}%')
+                                            for row in rows:
+                                                online_ids.add(str(row[0]))
+                                        conn.close()
+                    break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    
+    # 方法2: 通过docker日志检测最近的心跳
+    try:
+        for docker_bin in ("/usr/bin/docker", "/usr/local/bin/docker"):
+            if os.path.exists(docker_bin):
+                result = subprocess.run(
+                    [docker_bin, "logs", "--since", f"{ONLINE_LOG_SECONDS}s", 
+                     "--tail", "100", CONTAINER_NAME],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    # 从日志中提取设备ID模式
+                    import re
+                    # 匹配9位数字ID
+                    id_pattern = re.compile(r'\b\d{9}\b')
+                    for line in result.stdout.splitlines():
+                        ids = id_pattern.findall(line)
+                        for device_id in ids:
+                            online_ids.add(device_id)
+                break
+    except Exception:
+        pass
+    
+    return online_ids
 
 
 def days_ago(created_at_str):
@@ -130,9 +190,6 @@ def api_devices():
     if conn is None:
         return jsonify({"error": f"数据库不存在: {DB_PATH}", "devices": []})
 
-    now_ts = int(time.time())
-    online_cutoff = now_ts - ONLINE_TIMEOUT
-
     table = get_table_name(conn)
     if not table:
         conn.close()
@@ -153,8 +210,11 @@ def api_devices():
 
     conn.close()
 
+    # 获取真正在线的设备ID
+    online_ids = get_online_ids()
+    
     devices = []
-    active_count = 0
+    online_count = 0
 
     for row in rows:
         row_dict = dict(row)
@@ -162,9 +222,11 @@ def api_devices():
         dev_ip   = extract_ip(row_dict.get("info", "")) if has_info else ""
         reg_time = str(row_dict.get("created_at", "") or "")
         d = days_ago(reg_time)
-        is_active = (d is not None and d <= ACTIVE_DAYS)
-        if is_active:
-            active_count += 1
+        
+        # 真正的在线状态
+        is_online = dev_id in online_ids
+        if is_online:
+            online_count += 1
 
         # 友好显示距今时间
         if d is None:
@@ -178,7 +240,7 @@ def api_devices():
 
         devices.append({
             "id":        dev_id,
-            "online":    is_active,
+            "online":    is_online,
             "last_seen": reg_time,
             "age":       age_str,
             "ip":        dev_ip,
@@ -187,8 +249,9 @@ def api_devices():
 
     return jsonify({
         "total":        len(devices),
-        "online_count": active_count,
-        "offline_count": len(devices) - active_count,
+        "online_count": online_count,
+        "offline_count": len(devices) - online_count,
+        "online_ids":   list(online_ids),  # 添加在线设备ID列表
         "server_time":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "devices":      devices,
     })
@@ -346,6 +409,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="stat-card"><div class="num total-num" id="statTotal">-</div><div class="label">总设备数</div></div>
     <div class="stat-card"><div class="num online-num" id="statOnline">-</div><div class="label">当前在线</div></div>
     <div class="stat-card"><div class="num offline-num" id="statOffline">-</div><div class="label">离线设备</div></div>
+    <div class="stat-card" style="min-width: 300px; text-align: left;">
+      <div style="font-size: 13px; color: #888; margin-bottom: 5px;">在线设备ID</div>
+      <div id="onlineIdsList" style="font-family: monospace; font-size: 12px; color: #4caf50; max-height: 60px; overflow-y: auto;"></div>
+    </div>
   </div>
 
   <div class="toolbar">
@@ -407,8 +474,25 @@ function loadData() {
       document.getElementById('statOnline').textContent  = data.online_count || 0;
       document.getElementById('statOffline').textContent = data.offline_count || 0;
       document.getElementById('lastRefresh').textContent = '最后刷新: ' + (data.server_time || '');
+      
+      // 显示在线设备ID列表
+      const onlineIdsList = document.getElementById('onlineIdsList');
+      if (data.online_ids && data.online_ids.length > 0) {
+        onlineIdsList.innerHTML = data.online_ids.map(id => 
+          `<span style="margin-right: 8px; cursor: pointer;" onclick="searchDevice('${id}')" title="点击搜索">${id}</span>`
+        ).join('');
+      } else {
+        onlineIdsList.innerHTML = '<span style="color: #666;">暂无在线设备</span>';
+      }
+      
       renderTable();
     });
+}
+
+function searchDevice(deviceId) {
+  document.getElementById('searchBox').value = deviceId;
+  setFilter('all');
+  renderTable();
 }
 
 function setFilter(f) {
