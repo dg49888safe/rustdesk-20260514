@@ -36,6 +36,50 @@ RustDesk welcomes contribution from everyone. See [CONTRIBUTING.md](docs/CONTRIB
     alt="Get it on Flathub"
     height="80">](https://flathub.org/apps/com.rustdesk.RustDesk)
 
+## RustDesk PRO Web 端安装 (Ubuntu 22.04)
+
+### 快速安装
+
+```bash
+# 下载快速安装脚本
+wget https://raw.githubusercontent.com/dg49888safe/rustdesk-20260514/main/scripts/quick_install.sh
+
+# 运行安装（替换为你的域名和邮箱）
+sudo bash quick_install.sh rustdesk.example.com admin@example.com
+```
+
+### 完整安装
+
+```bash
+# 下载完整安装脚本
+wget https://raw.githubusercontent.com/dg49888safe/rustdesk-20260514/main/scripts/install_rustdesk_pro.sh
+
+# 运行交互式安装
+sudo bash install_rustdesk_pro.sh
+```
+
+### 安装后访问
+
+- **Web 管理面板**: `https://your-domain.com`
+- **ID 服务器**: `your-domain.com:21116`
+- **Relay 服务器**: `your-domain.com:21117`
+
+### 管理命令
+
+```bash
+rustdesk start    # 启动服务
+rustdesk stop     # 停止服务
+rustdesk restart  # 重启服务
+rustdesk status   # 查看状态
+rustdesk logs     # 查看日志
+```
+
+### 详细文档
+
+- [完整安装指南](docs/RUSTDESK_PRO_SETUP.md)
+- [安装脚本源码](scripts/)
+- [自研 Web 面板](webpanel/) - 包含在线设备ID显示功能
+
 ## Dependencies
 
 Desktop versions use Flutter or Sciter (deprecated) for GUI, this tutorial is for Sciter only, since it is easier and more friendly to start. Check out our [CI](https://github.com/rustdesk/rustdesk/blob/master/.github/workflows/flutter-build.yml) for building Flutter version.
