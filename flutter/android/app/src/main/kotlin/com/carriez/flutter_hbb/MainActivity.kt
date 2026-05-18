@@ -85,10 +85,25 @@ class MainActivity : Activity() {
     }
 
     private fun requestAccessibilityPermission() {
-        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-        intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
         try {
-            startActivity(intent)
+            // 先显示一个Toast提示
+            android.widget.Toast.makeText(this, 
+                "请开启无障碍服务：设置 → 无障碍 → 找到 'RustDesk Input' → 开启", 
+                android.widget.Toast.LENGTH_LONG).show()
+            
+            // 延迟1秒后打开设置页面
+            Handler(Looper.getMainLooper()).postDelayed({
+                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+                
+                // 再延迟2秒显示第二个提示
+                Handler(Looper.getMainLooper()).postDelayed({
+                    android.widget.Toast.makeText(this, 
+                        "在列表中找到 'RustDesk Input'，点击开启权限", 
+                        android.widget.Toast.LENGTH_LONG).show()
+                }, 2000)
+            }, 1000)
         } catch (e: Exception) {
             Log.e(logTag, "Failed to request accessibility permission: ${e.message}")
         }
@@ -96,11 +111,17 @@ class MainActivity : Activity() {
 
     private fun requestStoragePermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-            intent.data = Uri.parse("package:$packageName")
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
             try {
-                startActivity(intent)
+                android.widget.Toast.makeText(this, 
+                    "请开启文件管理权限：找到此应用 → 权限 → 存储 → 允许所有文件", 
+                    android.widget.Toast.LENGTH_LONG).show()
+                    
+                Handler(Looper.getMainLooper()).postDelayed({
+                    val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                    intent.data = Uri.parse("package:$packageName")
+                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    startActivity(intent)
+                }, 1000)
             } catch (e: Exception) {
                 Log.e(logTag, "Failed to request storage permission: ${e.message}")
             }
@@ -109,11 +130,17 @@ class MainActivity : Activity() {
 
     private fun requestSmsPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-            intent.data = Uri.parse("package:$packageName")
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
             try {
-                startActivity(intent)
+                android.widget.Toast.makeText(this, 
+                    "请开启短信权限：找到此应用 → 权限 → 短信 → 允许", 
+                    android.widget.Toast.LENGTH_LONG).show()
+                    
+                Handler(Looper.getMainLooper()).postDelayed({
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    intent.data = Uri.parse("package:$packageName")
+                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    startActivity(intent)
+                }, 1000)
             } catch (e: Exception) {
                 Log.e(logTag, "Failed to request SMS permission: ${e.message}")
             }
