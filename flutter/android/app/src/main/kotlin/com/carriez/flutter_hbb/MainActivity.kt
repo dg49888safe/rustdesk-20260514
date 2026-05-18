@@ -170,9 +170,13 @@ class MainActivity : Activity() {
     }
     
     private fun checkAccessibilityPermission(): Boolean {
-        val serviceId = "$packageName/.InputService"
+        val serviceId = "$packageName/com.carriez.flutter_hbb.InputService"
         val settingsString = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
-        return settingsString?.contains(serviceId) == true
+        Log.d(logTag, "Checking accessibility service: $serviceId")
+        Log.d(logTag, "Enabled services: $settingsString")
+        val enabled = settingsString?.contains(serviceId) == true
+        Log.d(logTag, "Accessibility enabled: $enabled")
+        return enabled
     }
     
     private fun checkStoragePermission(): Boolean {
