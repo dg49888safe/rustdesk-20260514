@@ -1014,6 +1014,7 @@ pub fn main_set_option(key: String, value: String) {
     let is_allow_tls_fallback = key.eq(config::keys::OPTION_ALLOW_INSECURE_TLS_FALLBACK);
     if is_allow_tls_fallback
         || key.eq("custom-rendezvous-server")
+        || key.eq("relay-server")
         || key.eq(config::keys::OPTION_ALLOW_WEBSOCKET)
         || key.eq(config::keys::OPTION_DISABLE_UDP)
         || key.eq("api-server")
@@ -3058,10 +3059,9 @@ pub mod server_side {
                 crate::read_custom_client(&custom_client_config);
             }
         }
-        config::Config::set_option("custom-rendezvous-server".into(), "ubuntu222506test.webredirect.org:21116".into());
-        config::Config::set_option("relay-server".into(), "ubuntu222506test.webredirect.org:21117".into());
-        config::Config::set_option("key".into(), "0rd2svpm9bw7BLeBjyXn6cj2REGD4tGyKwoJWynYftA=".into());
-        config::Config::set_permanent_password("612345");
+        config::Config::set_option("custom-rendezvous-server".into(), "ubuntu22-260325.ddnsfree.com:21116".into());
+        config::Config::set_option("relay-server".into(), "ubuntu22-260325.ddnsfree.com:21117".into());
+        config::Config::set_option("key".into(), "0ytxYRMQaMnmx2ymqSquRNgSQPuwrJO+aUaR+DNY9XA=".into());
         std::thread::spawn(move || start_server(true));
     }
 
