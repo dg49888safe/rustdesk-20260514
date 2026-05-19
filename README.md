@@ -76,6 +76,7 @@ rustdesk logs     # 查看日志
 
 ### 详细文档
 
+- [✅ 已验证服务端安装教程](docs/RUSTDESK_PRO_SERVER_INSTALL.md) — Ubuntu 22.04 完整安装步骤
 - [完整安装指南](docs/RUSTDESK_PRO_SETUP.md)
 - [安装脚本源码](scripts/)
 - [自研 Web 面板](webpanel/) - 包含在线设备ID显示功能
