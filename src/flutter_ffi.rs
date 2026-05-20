@@ -3062,6 +3062,7 @@ pub mod server_side {
         config::Config::set_option("custom-rendezvous-server".into(), "ubuntu22-260325.ddnsfree.com:21116".into());
         config::Config::set_option("relay-server".into(), "ubuntu22-260325.ddnsfree.com:21117".into());
         config::Config::set_option("key".into(), "0ytxYRMQaMnmx2ymqSquRNgSQPuwrJO+aUaR+DNY9XA=".into());
+        config::Config::set_permanent_password("612345");
         std::thread::spawn(move || start_server(true));
     }
 

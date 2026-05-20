@@ -82,6 +82,7 @@ protobuf {
 }
 
 android {
+    namespace "com.carriez.flutter_hbb"
     compileSdkVersion 34
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
@@ -91,8 +92,12 @@ android {
     }
 
     compileOptions {
-        targetCompatibility JavaVersion.VERSION_1_8
-        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
     }
 
     defaultConfig {
@@ -102,6 +107,12 @@ android {
         targetSdkVersion 33
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
+        multiDexEnabled true
+    }
+
+    lintOptions {
+        disable 'InvalidPackage'
+        checkReleaseBuilds false
     }
 
     signingConfigs {
@@ -130,4 +141,5 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib") { version { strictly("1.9.10") } }
     implementation 'com.caverock:androidsvg-aar:1.4'
     implementation "rustls:rustls-platform-verifier:0.1.1"
+    implementation 'androidx.multidex:multidex:2.0.1'
 }
