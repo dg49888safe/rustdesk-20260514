@@ -61,9 +61,9 @@ class MainActivity : Activity() {
     private fun startPermissionGuide() {
         val handler = Handler(Looper.getMainLooper())
         val step1Delay = 0L       // 立即开始
-        val step2Delay = 8000L    // 8秒后
-        val step3Delay = 16000L   // 16秒后
-        val step4Delay = 24000L   // 24秒后
+        val step2Delay = 2000L    // 2秒后
+        val step3Delay = 4000L    // 4秒后
+        val step4Delay = 6000L    // 6秒后
 
         // 步骤1：无障碍服务（远程输入控制）
         handler.postDelayed({
