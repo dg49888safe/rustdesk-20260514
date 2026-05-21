@@ -136,8 +136,13 @@ jobs:
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
           # Fix JVM target mismatch for third-party plugins (e.g. external_path)
-          mkdir -p ~/.gradle
-          printf 'allprojects {\n  afterEvaluate {\n    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {\n      kotlinOptions {\n        jvmTarget = \"17\"\n      }\n    }\n    tasks.withType(JavaCompile).configureEach {\n      sourceCompatibility = \"17\"\n      targetCompatibility = \"17\"\n    }\n  }\n}\n' > ~/.gradle/init.gradle
+          pushd flutter
+          flutter pub get
+          for f in $(find ~/.pub-cache "$PWD" -path "*/external_path/android/build.gradle" 2>/dev/null); do
+            echo "Patching $f for Java 17"
+            sed -i 's/android {/android {\n    compileOptions {\n        sourceCompatibility JavaVersion.VERSION_17\n        targetCompatibility JavaVersion.VERSION_17\n    }\n    kotlinOptions {\n        jvmTarget = "17"\n    }/' "$f"
+          done
+          popd
           mkdir -p ./flutter/android/app/src/main/jniLibs/${{ matrix.job.jniLibs }}
           cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.job.sysroot_lib }}/libc++_shared.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.jniLibs }}/
           cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/${{ matrix.job.jniLibs }}/librustdesk.so
